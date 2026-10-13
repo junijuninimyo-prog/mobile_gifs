@@ -1,4 +1,4 @@
-# Desktop GIFs
+# Mobile GIFs
 
 <img src="extension/icons/icon-128.png" width="64" height="64" alt="" align="right">
 
