@@ -21,14 +21,22 @@ html[dark] .gcfy-btn {
   color: #f1f1f1;
 }
 
-/* icons/icon.svg is used as a mask so it takes the button's text colour. */
+/* Icon is drawn with CSS only (a bordered "GIF" chip) so the button does not
+   depend on chrome-extension:// URL resolution, which Kiwi Browser on mobile
+   handles poorly. */
 .gcfy-btn::before {
-  content: "";
-  width: 24px;
-  height: 24px;
-  background-color: currentColor;
-  -webkit-mask: url("chrome-extension://__MSG_@@extension_id__/icons/icon.svg") center / contain no-repeat;
-  mask: url("chrome-extension://__MSG_@@extension_id__/icons/icon.svg") center / contain no-repeat;
+  content: "GIF";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 26px;
+  height: 26px;
+  border: 2px solid currentColor;
+  border-radius: 5px;
+  font: 700 10px/1 Roboto, Arial, sans-serif;
+  letter-spacing: 0.3px;
+  color: currentColor;
 }
 
 .gcfy-btn:hover,
@@ -48,4 +56,18 @@ html[dark] .gcfy-btn[aria-expanded="true"] {
 
 html[dark] .gcfy-btn:focus-visible {
   outline-color: #3ea6ff;
+}
+
+/* Mobile: nút to hơn cho dễ chạm, và có chút margin để không dính nút bên cạnh. */
+@media (pointer: coarse) {
+  .gcfy-btn {
+    width: 44px;
+    height: 44px;
+    margin: 0 4px;
+  }
+  .gcfy-btn::before {
+    width: 30px;
+    height: 30px;
+    font-size: 11px;
+  }
 }

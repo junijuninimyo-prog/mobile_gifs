@@ -1,9 +1,16 @@
 // Isolated-world content script: adds a GIF button to YouTube's comment boxes,
 // shows the picker, and hands the chosen GIF to the page-world hook (main.js)
 // by submitting a one-time marker through YouTube's own comment box.
+//
+// Works on both desktop (ytd-*, contenteditable editor) and mobile (ytm-*,
+// textarea editor).
 (() => {
-  const BOX_SCOPE = 'ytd-comment-simplebox-renderer, ytd-comment-thread-renderer';
-  const POST_DIALOG = 'ytd-backstage-post-dialog-renderer';
+  // Desktop: comment box chứa editor contenteditable và nút #footer.
+  const BOX_SCOPE_DESKTOP = 'ytd-comment-simplebox-renderer, ytd-comment-thread-renderer';
+  const POST_DIALOG_DESKTOP = 'ytd-backstage-post-dialog-renderer';
+  // Mobile: comment box là ytm-comment-simplebox-renderer, editor là textarea.
+  const BOX_SCOPE_MOBILE = 'ytm-comment-simplebox-renderer, ytm-comment-thread-renderer';
+
   const PICKER_W = 340;
   const PICKER_H = 420;
   const SEARCH_DEBOUNCE_MS = 350;
@@ -42,7 +49,6 @@
       display: flex; align-items: flex-start; gap: 6px;
       scrollbar-gutter: stable;
     }
-    /* Slim rounded scrollbar: a 6px thumb inside a 12px transparent track. */
     .grid::-webkit-scrollbar { width: 12px; }
     .grid::-webkit-scrollbar-track { background: transparent; }
     .grid::-webkit-scrollbar-thumb {
@@ -85,11 +91,36 @@
 
   // ------------------------------------------------------------- GIF buttons
 
+  // Tìm editor trong comment box. Trả về { el, kind } với kind = 'ce' | 'ta'.
+  function findEditor(box) {
+    // Desktop: contenteditable.
+    const d = box.querySelector('#contenteditable-root');
+    if (d) return { el: d, kind: 'ce' };
+    // Mobile: textarea.
+    const m = box.querySelector('textarea.YtmCommentSimpleboxRendererReply')
+           || box.querySelector('textarea');
+    if (m) return { el: m, kind: 'ta' };
+    return null;
+  }
+
+  // Tìm nút submit.
+  function findSubmit(box) {
+    // Desktop.
+    const d = box.querySelector('#submit-button button');
+    if (d) return d;
+    // Mobile: nút "Bình luận" hoặc "Comment".
+    return box.querySelector('button[aria-label="Bình luận"]')
+        || box.querySelector('button[aria-label="Comment"]')
+        || box.querySelector('yt-button-renderer[is-submit] button')
+        || box.querySelector('yt-button-renderer:last-of-type button');
+  }
+
   function addButton(box) {
     if (box.querySelector('.gcfy-btn')) return;
-    if (!box.closest(BOX_SCOPE) || box.closest(POST_DIALOG)) return;
-    const footer = box.querySelector('#footer');
-    if (!footer) return;
+    const inDesktop = box.closest(BOX_SCOPE_DESKTOP) && !box.closest(POST_DIALOG_DESKTOP);
+    const inMobile = box.closest(BOX_SCOPE_MOBILE);
+    if (!inDesktop && !inMobile) return;
+
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'gcfy-btn';
@@ -103,15 +134,35 @@
       if (picker.open && picker.anchor === btn) closePicker();
       else openPicker(btn, box);
     });
-    const emoji = footer.querySelector('#emoji-button');
-    if (emoji && emoji.parentElement === footer) emoji.after(btn);
-    else footer.prepend(btn);
+
+    // Desktop: chèn cạnh nút emoji trong #footer.
+    const footer = box.querySelector('#footer');
+    if (footer) {
+      const emoji = footer.querySelector('#emoji-button');
+      if (emoji && emoji.parentElement === footer) emoji.after(btn);
+      else footer.prepend(btn);
+      return;
+    }
+
+    // Mobile: chèn cạnh nút Hủy (trước nút Bình luận).
+    const cancel = box.querySelector('button[aria-label="Hủy"]')
+                || box.querySelector('button[aria-label="Cancel"]');
+    const submit = findSubmit(box);
+    const anchorEl = cancel || submit;
+    if (anchorEl && anchorEl.parentElement) {
+      anchorEl.parentElement.insertBefore(btn, anchorEl);
+      return;
+    }
+    // Dự phòng cuối: gắn vào box.
+    box.append(btn);
   }
 
   let scanQueued = false;
   function scan() {
     scanQueued = false;
-    for (const box of document.querySelectorAll('ytd-commentbox')) addButton(box);
+    for (const box of document.querySelectorAll(
+      'ytd-commentbox, ytm-comment-simplebox-renderer, ytm-commentbox'
+    )) addButton(box);
   }
   new MutationObserver(() => {
     if (scanQueued) return;
@@ -243,7 +294,6 @@
 
   function render(gifs) {
     picker.gifs = gifs;
-    // Two columns that grow downwards; each GIF goes into the shorter one.
     const cols = [0, 1].map(() => {
       const col = document.createElement('div');
       col.className = 'col';
@@ -280,9 +330,9 @@
     sel.addRange(range);
   }
 
-  // Adds the marker after whatever the user has typed, leaving their text
-  // (and any emoji or mentions in it) as it is.
-  function appendMarker(editor, marker) {
+  // ----- Desktop editor: contenteditable. -----
+
+  function appendMarkerCE(editor, marker) {
     const range = document.createRange();
     range.selectNodeContents(editor);
     range.collapse(false);
@@ -295,7 +345,7 @@
     }
   }
 
-  function removeMarker(editor, marker) {
+  function removeMarkerCE(editor, marker) {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const at = node.data.indexOf(marker);
@@ -314,16 +364,47 @@
     }
   }
 
+  // ----- Mobile editor: textarea. -----
+
+  function appendMarkerTA(editor, marker) {
+    const start = editor.selectionStart ?? editor.value.length;
+    const end = editor.selectionEnd ?? editor.value.length;
+    editor.setRangeText(marker, start, end, 'end');
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: marker }));
+  }
+
+  function removeMarkerTA(editor, marker) {
+    const at = editor.value.indexOf(marker);
+    if (at === -1) return;
+    const before = editor.value.slice(0, at);
+    const after = editor.value.slice(at + marker.length);
+    editor.value = before + after;
+    editor.selectionStart = editor.selectionEnd = before.length;
+    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+  }
+
+  function appendMarker(editor, kind, marker) {
+    if (kind === 'ta') return appendMarkerTA(editor, marker);
+    return appendMarkerCE(editor, marker);
+  }
+
+  function removeMarker(editor, kind, marker) {
+    if (kind === 'ta') return removeMarkerTA(editor, marker);
+    return removeMarkerCE(editor, marker);
+  }
+
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   async function send(gif) {
     const box = picker.box;
-    const editor = box && box.isConnected && box.querySelector('#contenteditable-root');
-    const submit = box && box.querySelector('#submit-button button');
-    if (!editor || !submit) {
+    const found = box && box.isConnected && findEditor(box);
+    const submit = box && findSubmit(box);
+    if (!found || !submit) {
       setStatus('The comment box was closed. Open it and try again.', 'error');
       return;
     }
+    const editor = found.el;
+    const kind = found.kind;
 
     const nonce = newNonce();
     const marker = `[[gif:${gif.id}:${nonce}]]`;
@@ -342,15 +423,13 @@
     setStatus('Posting…');
     try {
       toMain({ type: 'arm', id: gif.id, nonce });
-      // Without the page hook the marker would be posted as plain text, so
-      // nothing is typed into the box until the hook has answered.
       const armed = await Promise.race([armedPromise, sleep(ARM_TIMEOUT_MS).then(() => false)]);
       if (!armed) {
         setStatus('The page hook is not running. Refresh this page and try again.', 'error');
         return;
       }
 
-      appendMarker(editor, marker);
+      appendMarker(editor, kind, marker);
       for (let i = 0; i < 20 && submit.disabled; i++) await sleep(50);
       submit.click();
 
@@ -366,9 +445,8 @@
         closePicker();
         return;
       }
-      // Failed or never sent: take the marker back out of the box.
       toMain({ type: 'disarm', nonce });
-      if (editor.isConnected) removeMarker(editor, marker);
+      if ((kind === 'ce' && editor.isConnected) || kind === 'ta') removeMarker(editor, kind, marker);
       setStatus((result && result.error) || 'The GIF was not sent. Nothing was posted.', 'error');
     } finally {
       fromMain.delete(nonce);
@@ -380,9 +458,6 @@
 
   const inPicker = (e) => picker.open && e.composedPath().includes(picker.host);
 
-  // Registered at document_start in the capture phase, ahead of YouTube's own
-  // handlers, so typing in the search field does not trigger player shortcuts
-  // and scrolling the grid does not flip to the next Short.
   for (const type of ['keydown', 'keyup', 'keypress']) {
     window.addEventListener(type, (e) => {
       if (!inPicker(e)) return;
@@ -398,6 +473,7 @@
     }, true);
   }
   window.addEventListener('wheel', (e) => { if (inPicker(e)) e.stopImmediatePropagation(); }, { capture: true, passive: true });
+  window.addEventListener('touchmove', (e) => { if (inPicker(e)) e.stopImmediatePropagation(); }, { capture: true, passive: true });
 
   window.addEventListener('pointerdown', (e) => {
     if (!picker.open || picker.busy) return;
