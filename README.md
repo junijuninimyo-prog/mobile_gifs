@@ -1,4 +1,4 @@
-# Mobile Gift
+# Mobile Gifs
 
 <img src="extension/icons/icon-128.png" width="64" height="64" alt="" align="right">
 
